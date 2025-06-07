@@ -1,0 +1,38 @@
+# Node.js dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Build artifacts
+ios/Pods/
+android/build/
+android/app/build/
+
+# React Native Metro Bundler cache
+metro-cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Xcode-related exclusions (iOS)
+ios/.DS_Store
+ios/*.xcworkspace/
+ios/*.xcuserdata/
+ios/DerivedData/
+
+# Android Studio exclusions
+android/.gradle/
+android/.idea/
+android/local.properties
+
+# VS Code settings
+.vscode/
+
+# Generated files
+coverage/
+dist/
+".settings/" 
+android/.settings/
+
