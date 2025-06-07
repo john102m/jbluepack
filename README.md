@@ -26,18 +26,16 @@ cd ios && pod install && cd .. && npx react-native run-ios  # For iOS
 Usage
 Scanning for Devices
 tsx
-import { BluetoothScanner } from 'jbluepack';
+import { BluetoothModule, BLEModule  } from 'jbluepack';
+  const enableBluetooth = async () => {
+    try {
+      await BluetoothModule.enableBluetooth();
+      setEnabled(true);
+    } catch (error) {
+      console.error('Error enabling Bluetooth:', error);
+    }
+  };
 
-BluetoothScanner.scan()
-  .then(devices => console.log(devices))
-  .catch(error => console.error(error));
-Connecting to a Device
-tsx
-import { BluetoothManager } from 'jbluepack';
-
-BluetoothManager.connect(deviceId)
-  .then(() => console.log('Connected!'))
-  .catch(error => console.error('Connection failed:', error));
 Development
 If contributing to JBluePack, clone the repo and install dependencies:
 
