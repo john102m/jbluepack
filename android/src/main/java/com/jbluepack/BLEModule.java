@@ -22,8 +22,13 @@ import android.bluetooth.BluetoothGattDescriptor;
 
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothProfile;
+import android.bluetooth.le.ScanRecord;
+import android.os.ParcelUuid;
+import java.util.Map;
+
 import android.os.Handler;
 import android.os.Looper;
+import java.util.List;
 
 import java.util.UUID;
 import android.util.Log;
@@ -32,16 +37,23 @@ public class BLEModule extends ReactContextBaseJavaModule {
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothGatt bluetoothGatt;
 
+    private BluetoothLeScanner bleScanner;
+    private Promise scanPromise;
+
     private ReactApplicationContext reactContext;
     private static final String TAG = "BLEModule";  // ✅ Define TAG
     private Promise connectionPromise;  // ✅ Store Promise to resolve later
     private static final String ESP32_DEVICE_ADDRESS = "94:A9:90:48:02:FA";//78:1C:3C:A5:B1:36"; // ESP32 BLE MAC address
+    private static final String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+    private static final String CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
     public BLEModule(ReactApplicationContext reactContext) {
         super(reactContext);
         this.reactContext = reactContext;
         bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-
+        if (bluetoothAdapter != null) {
+            bleScanner = bluetoothAdapter.getBluetoothLeScanner();
+        }
     }
 
     @Override
@@ -49,25 +61,50 @@ public class BLEModule extends ReactContextBaseJavaModule {
         return "BLEModule"; // Used in React Native
     }
 
+    private final ScanCallback bleScanCallback = new ScanCallback() {
+        @Override
+        public void onScanResult(int callbackType, ScanResult result) {
+            BluetoothDevice device = result.getDevice();
+            String deviceInfo = device.getName() + " - " + device.getAddress();
+            Log.d(TAG, "BLE Device Found: " + deviceInfo);
+
+            ScanRecord record = result.getScanRecord();
+            byte[] data = record.getManufacturerSpecificData(0x02E5);// Espressif's company ID
+            if (data != null) {
+                // Convert raw bytes to sensor data, if that's what you’re sending
+                Log.d(TAG, "Sensor Data: " + new String(data));
+            }
+            Map<ParcelUuid, byte[]> serviceData = record.getServiceData();
+
+            if (scanPromise != null) {
+                scanPromise.resolve(deviceInfo);
+                scanPromise = null;
+            }
+
+            if (bleScanner != null) {
+                bleScanner.stopScan(this);
+            }
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            Log.e(TAG, "BLE scan failed with code: " + errorCode);
+            if (scanPromise != null) {
+                scanPromise.reject("BLE Scan Failed", "Error code: " + errorCode);
+                scanPromise = null;
+            }
+        }
+    };
+
     @ReactMethod
     public void scanBLEDevices(Promise promise) {
-        BluetoothLeScanner scanner = bluetoothAdapter.getBluetoothLeScanner();
-        if (scanner == null) {
+        if (bleScanner == null) {
             promise.reject("BLE Scan Error", "Bluetooth LE scanner unavailable.");
             return;
         }
-        Log.d(TAG, "Scanning for BLE devices...");
-        scanner.startScan(new ScanCallback() {
-            @Override
-            public void onScanResult(int callbackType, ScanResult result) {
-                BluetoothDevice device = result.getDevice();
-                String deviceInfo = device.getName() + " - " + device.getAddress();
-                Log.d(TAG, "BLE Device Found: " + deviceInfo);
-                promise.resolve(deviceInfo);  // Send device info back to React Native
-            }
-        });
-
-        promise.resolve("Scanning for BLE devices...");
+        Log.d(TAG, "Starting BLE scan...");
+        this.scanPromise = promise;
+        bleScanner.startScan(bleScanCallback);
     }
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
@@ -97,22 +134,25 @@ public class BLEModule extends ReactContextBaseJavaModule {
         }
         @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            WritableMap params = Arguments.createMap();
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "Services discovered!");
 
-                for (BluetoothGattService service : gatt.getServices()) {
-                    Log.d(TAG, "Found service UUID: " + service.getUuid().toString());
+//                for (BluetoothGattService service : gatt.getServices()) {
+//                    Log.d(TAG, "Found service UUID: " + service.getUuid().toString());
+//
+//                    for (BluetoothGattCharacteristic characteristic : service.getCharacteristics()) {
+//                        Log.d(TAG, "Found characteristic UUID: " + characteristic.getUuid().toString());
+//                    }
+//                }
 
-                    for (BluetoothGattCharacteristic characteristic : service.getCharacteristics()) {
-                        Log.d(TAG, "Found characteristic UUID: " + characteristic.getUuid().toString());
-                    }
-                }
-
-                BluetoothGattService service = gatt.getService(UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b"));
+                BluetoothGattService service = gatt.getService(UUID.fromString(SERVICE_UUID));
                 if (service != null) {
-                    BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8"));
+                    BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString(CHARACTERISTIC_UUID));
                     if (characteristic != null) {
                         Log.d(TAG, "Characteristic found! Ready for BLE operations.");
+                        params.putString("message", "Characteristic found! Ready for BLE operations.");
+                        sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
                     }
                 }
             } else {
@@ -132,7 +172,7 @@ public class BLEModule extends ReactContextBaseJavaModule {
                 }
 
                 params.putString("status", "Connected");
-                sendEvent("BLEConnectionStatus", params);  // ✅ Use separate event type for connection status
+                sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
 
                 gatt.discoverServices();  // Start discovering services
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED){
@@ -148,7 +188,9 @@ public class BLEModule extends ReactContextBaseJavaModule {
                 }
 
                 params.putString("status", "Disconnected");
-                sendEvent("BLEConnectionStatus", params);  // ✅ Use separate event type for connection status
+                sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
+                // 🚀 Attempt reconnection
+                //reconnectDevice(gatt.getDevice());
             }
         }
     };
@@ -215,6 +257,15 @@ public class BLEModule extends ReactContextBaseJavaModule {
             promise.reject("Write Failed", "Failed to send BLE data.");
         }
     }
+    private void reconnectDevice(BluetoothDevice device) {
+        Log.d(TAG, "Attempting to reconnect...");
+
+        BluetoothGatt gatt = device.connectGatt(getReactApplicationContext(), false, gattCallback);
+
+        if (gatt == null) {
+            Log.e(TAG, "Reconnect failed!");
+        }
+    }
 
 
     private void sendEvent(String eventName, WritableMap params) {
@@ -227,9 +278,78 @@ public class BLEModule extends ReactContextBaseJavaModule {
         }
     }
 
-
     @ReactMethod
     public void subscribeToBLENotifications(String serviceUUID, String characteristicUUID, Promise promise) {
+        if (bluetoothGatt == null) {
+            promise.reject("BLE Not Connected", "No active BLE connection.");
+            return;
+        }
+
+        BluetoothGattService service = bluetoothGatt.getService(UUID.fromString(serviceUUID));
+        if (service == null) {
+            promise.reject("Service Not Found", "BLE service not found.");
+            return;
+        }
+
+        BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString(characteristicUUID));
+        if (characteristic == null) {
+            promise.reject("Characteristic Not Found", "BLE characteristic not found.");
+            return;
+        }
+
+        int properties = characteristic.getProperties();
+        boolean supportsNotify = (properties & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0;
+        boolean supportsIndicate = (properties & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0;
+        Log.d(TAG, "Characteristic supports notify: " + supportsNotify + ", indicate: " + supportsIndicate);
+
+        if (!supportsNotify && !supportsIndicate) {
+            promise.reject("Unsupported", "Characteristic does not support notifications or indications.");
+            return;
+        }
+
+        // Enable local notifications
+        boolean notificationSet = bluetoothGatt.setCharacteristicNotification(characteristic, true);
+        Log.d(TAG, "setCharacteristicNotification result: " + notificationSet);
+
+        // Check for CCCD descriptor
+        BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
+
+        if (descriptor == null) {
+            // Log all descriptors found (if any)
+            List<BluetoothGattDescriptor> descriptors = characteristic.getDescriptors();
+            if (descriptors.isEmpty()) {
+                Log.w(TAG, "No descriptors found on characteristic");
+            } else {
+                for (BluetoothGattDescriptor d : descriptors) {
+                    Log.w(TAG, "Found descriptor UUID: " + d.getUuid());
+                }
+            }
+
+            // Fallback: Resolve anyway if notifications are working without descriptor write
+            Log.w(TAG, "CCCD descriptor not found. Proceeding without writing descriptor.");
+            promise.resolve("Subscribed to notifications without descriptor write.");
+            return;
+        }
+
+        // Set descriptor value depending on notify or indicate support
+        if (supportsIndicate) {
+            descriptor.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
+        } else {
+            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+        }
+
+        // Write the descriptor to enable notifications on the peripheral
+        boolean writeDescriptorStarted = bluetoothGatt.writeDescriptor(descriptor);
+        Log.d(TAG, "Started writing descriptor: " + writeDescriptorStarted);
+
+        // IMPORTANT: The writeDescriptor is asynchronous.
+        // You need to listen for onDescriptorWrite() callback to confirm success.
+        // For now, resolve immediately and handle errors in the callback.
+
+        promise.resolve("Subscribing to BLE notifications started.");
+    }
+    @ReactMethod
+    public void subscribeToBLENotificationsMine(String serviceUUID, String characteristicUUID, Promise promise) {
         if (bluetoothGatt == null) {
             promise.reject("BLE Not Connected", "No active BLE connection.");
             return;
@@ -250,10 +370,18 @@ public class BLEModule extends ReactContextBaseJavaModule {
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
+                Log.d(TAG, "Looking for CCCD descriptor: " + descriptor);
 
                 if (descriptor != null) {
-                    descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                    Log.d(TAG, "Writing Descriptor.......");
+                    //descriptor.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE | BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                    //descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                    //BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE // = {0x01, 0x00}
+                    //BluetoothGattDescriptor.ENABLE_INDICATION_VALUE   // = {0x02, 0x00}
+                    descriptor.setValue(new byte[] {0x03, 0x00});
+
                     bluetoothGatt.writeDescriptor(descriptor);
+
                 }
             }
         }, 500); // 500ms delay before attempting to write descriptor

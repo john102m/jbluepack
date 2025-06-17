@@ -17,7 +17,8 @@ public class JBluePack  implements ReactPackage {
 
         return Arrays.asList(
             new BLEModule(reactContext),         // Bluetooth Low Energy (BLE)
-            new BluetoothModule(reactContext)         // Bluetooth Classic 
+            new BluetoothModule(reactContext),         // Bluetooth Classic
+            new AudioModule(reactContext)
             );
     }
 
