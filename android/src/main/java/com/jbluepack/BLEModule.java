@@ -39,10 +39,13 @@ public class BLEModule extends ReactContextBaseJavaModule {
 
     private BluetoothLeScanner bleScanner;
     private Promise scanPromise;
+    private Promise subscribePromise;
+    private Promise writePromise;
 
     private ReactApplicationContext reactContext;
     private static final String TAG = "BLEModule";  // ✅ Define TAG
     private Promise connectionPromise;  // ✅ Store Promise to resolve later
+    private Promise disconnectPromise;  // ✅ Store Promise to resolve later
     private static final String ESP32_DEVICE_ADDRESS = "94:A9:90:48:02:FA";//78:1C:3C:A5:B1:36"; // ESP32 BLE MAC address
     private static final String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
     private static final String CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
@@ -112,13 +115,21 @@ public class BLEModule extends ReactContextBaseJavaModule {
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "Subscribed to BLE notifications!");
-                WritableMap params = Arguments.createMap();
-                params.putString("message", "Subscribed to BLE notifications!");
-                sendEvent("BluetoothNotification", params);
-                // Notify JS layer if needed
+                if (subscribePromise != null) {
+                    subscribePromise.resolve("Successfully subscribed to BLE notifications.");
+                    subscribePromise = null;
+                }
             } else {
                 Log.e(TAG, "Failed to write descriptor for notifications.");
+                if (subscribePromise != null) {
+                    subscribePromise.reject("Descriptor Write Failed", "Failed with status: " + status);
+                    subscribePromise = null;
+                }
             }
+            WritableMap params = Arguments.createMap();
+            params.putString("message", status == BluetoothGatt.GATT_SUCCESS ? "Subscribed to BLE notifications!" : "Failed to subscribe");
+            params.putString("origin", "native");
+            sendEvent("BluetoothNotification", params);
         }
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
@@ -126,8 +137,10 @@ public class BLEModule extends ReactContextBaseJavaModule {
             // ✅ Ensure message isn’t reprocessed multiple times
             if (!receivedData.isEmpty()) {
                 Log.d(TAG, "Received Notification: " + receivedData);
+
                 WritableMap params = Arguments.createMap();
                 params.putString("message", receivedData);
+                params.putString("origin", "esp32");
                 sendEvent("BluetoothNotification", params);
             }
 
@@ -151,7 +164,8 @@ public class BLEModule extends ReactContextBaseJavaModule {
                     BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString(CHARACTERISTIC_UUID));
                     if (characteristic != null) {
                         Log.d(TAG, "Characteristic found! Ready for BLE operations.");
-                        params.putString("message", "Characteristic found! Ready for BLE operations.");
+                        params.putString("status", "Characteristic found! Ready for BLE operations.");
+                        params.putString("origin", "native");
                         sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
                     }
                 }
@@ -160,37 +174,61 @@ public class BLEModule extends ReactContextBaseJavaModule {
             }
         }
         @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+            if (writePromise != null) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.d(TAG, "BLE write succeeded");
+                    writePromise.resolve("Write successful");
+                } else {
+                    Log.e(TAG, "BLE write failed with status: " + status);
+                    writePromise.reject("Write Failed", "Failed with status: " + status);
+                }
+                writePromise = null;
+            }
+
+        }
+
+        @Override
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
             WritableMap params = Arguments.createMap();
+
             if (newState == BluetoothProfile.STATE_CONNECTED) {
 
-                Log.d(TAG, "Connected to ESP32! Refreshing cache...");
+                Log.d(TAG, "Connected to ESP32!");
 
-                if (connectionPromise != null) {
+                if (connectionPromise != null) { //user initiated connection
                     connectionPromise.resolve("Connected to ESP32!");  // ✅ Resolve the promise when connected
                     connectionPromise = null;  // Clear reference
+                }else{
+                    params.putString("status", "Connected"); // device connected
+                    params.putString("origin", "native");
+                    sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
                 }
 
-                params.putString("status", "Connected");
-                sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
-
                 gatt.discoverServices();  // Start discovering services
+
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED){
                 Log.d(TAG, "Disconnected from ESP32. Status: " + status);
 //                if (status == 133) {  // ✅ Common timeout issue
-//                    Log.e(TAG, "Connection timeout—retrying...");
-//                    gatt.connect();  // Retry connection
+//                    Log.e(TAG, "Connection timeout.");
+//
 //                }
-                if (connectionPromise != null) {
-                    Log.d(TAG, "Rejecting promise");
-                    connectionPromise.reject("BLE Disconnected", "ESP32 BLE disconnected.");
-                    connectionPromise = null;
+                if (disconnectPromise != null) { //user initiated disconnect
+                    disconnectPromise.resolve("ESP32 BLE disconnected.");
+                    disconnectPromise = null;
+                }else{
+                    params.putString("status", "Disconnected"); // device disconnected
+                    params.putString("origin", "native");
+                    sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
                 }
 
-                params.putString("status", "Disconnected");
-                sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
                 // 🚀 Attempt reconnection
                 //reconnectDevice(gatt.getDevice());
+                // Now clean up
+                if (bluetoothGatt != null) {
+                    gatt.close();  // gatt is same as bluetoothGatt in this callback
+                    bluetoothGatt = null;
+                }
             }
         }
     };
@@ -203,26 +241,16 @@ public class BLEModule extends ReactContextBaseJavaModule {
         bluetoothGatt = device.connectGatt(getReactApplicationContext(), false, gattCallback, BluetoothDevice.TRANSPORT_LE);
 
         Log.d(TAG, "Attempting to connect to ESP32...");
-        promise.resolve("Attempting to connect to ESP32...");  // Initial message before real connection is established
-    }
-    @ReactMethod
-    public void connectToBLEDevice(String deviceAddress, Promise promise) {
-        BluetoothDevice device = bluetoothAdapter.getRemoteDevice(deviceAddress);
-        bluetoothGatt = device.connectGatt(getReactApplicationContext(), false, gattCallback );
 
-        promise.resolve("Connecting to BLE device...");
     }
 
     @ReactMethod
     public void disconnectBLE(Promise promise) {
+
         Log.d(TAG, "Attempting to disconnect BLE...");
         if (bluetoothGatt != null) {
-            Log.d(TAG, "bluetoothGatt != null");
             bluetoothGatt.disconnect();
-            bluetoothGatt.close();
-            bluetoothGatt = null;
-            Log.d(TAG, "bluetoothGatt == null");
-            promise.resolve("Disconnected from BLE device");
+            disconnectPromise = promise; // ✅ Store the promise for later resolution
         } else {
             promise.reject("BLE Not Connected", "No active BLE connection to disconnect.");
         }
@@ -248,25 +276,23 @@ public class BLEModule extends ReactContextBaseJavaModule {
         }
 
         characteristic.setValue(data.getBytes()); // ✅ Convert string to byte array
-        boolean success = bluetoothGatt.writeCharacteristic(characteristic); // ✅ Write data
+        boolean writeStarted = bluetoothGatt.writeCharacteristic(characteristic);
 
-        if (success) {
-            Log.d(TAG, "Sent data via BLE: " + data);
-            promise.resolve("Data sent successfully!");
+        if (writeStarted) {
+            writePromise = promise;  // store to resolve/reject later
+            Log.d(TAG, "Started BLE write for data: " + data);
         } else {
-            promise.reject("Write Failed", "Failed to send BLE data.");
+            promise.reject("Write Failed", "Failed to start BLE write.");
         }
     }
     private void reconnectDevice(BluetoothDevice device) {
         Log.d(TAG, "Attempting to reconnect...");
-
         BluetoothGatt gatt = device.connectGatt(getReactApplicationContext(), false, gattCallback);
 
         if (gatt == null) {
             Log.e(TAG, "Reconnect failed!");
         }
     }
-
 
     private void sendEvent(String eventName, WritableMap params) {
         if (reactContext != null) {
@@ -311,88 +337,35 @@ public class BLEModule extends ReactContextBaseJavaModule {
         boolean notificationSet = bluetoothGatt.setCharacteristicNotification(characteristic, true);
         Log.d(TAG, "setCharacteristicNotification result: " + notificationSet);
 
+        if (!notificationSet) {
+            promise.reject("Failed", "Failed to set local notification state.");
+            return;
+        }
         // Check for CCCD descriptor
         BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
 
         if (descriptor == null) {
-            // Log all descriptors found (if any)
-            List<BluetoothGattDescriptor> descriptors = characteristic.getDescriptors();
-            if (descriptors.isEmpty()) {
-                Log.w(TAG, "No descriptors found on characteristic");
-            } else {
-                for (BluetoothGattDescriptor d : descriptors) {
-                    Log.w(TAG, "Found descriptor UUID: " + d.getUuid());
-                }
-            }
-
-            // Fallback: Resolve anyway if notifications are working without descriptor write
-            Log.w(TAG, "CCCD descriptor not found. Proceeding without writing descriptor.");
-            promise.resolve("Subscribed to notifications without descriptor write.");
+            Log.w(TAG, "CCCD descriptor not found. Notifications may not work properly.");
+            promise.resolve("Subscribed without CCCD descriptor (may not work reliably).");
             return;
         }
 
         // Set descriptor value depending on notify or indicate support
-        if (supportsIndicate) {
-            descriptor.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE);
-        } else {
-            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-        }
+        descriptor.setValue(supportsIndicate ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+
+        subscribePromise = promise;  // 🔑 store promise for callback
 
         // Write the descriptor to enable notifications on the peripheral
         boolean writeDescriptorStarted = bluetoothGatt.writeDescriptor(descriptor);
         Log.d(TAG, "Started writing descriptor: " + writeDescriptorStarted);
 
         // IMPORTANT: The writeDescriptor is asynchronous.
-        // You need to listen for onDescriptorWrite() callback to confirm success.
-        // For now, resolve immediately and handle errors in the callback.
+        // Listen for onDescriptorWrite() callback to confirm success.
 
-        promise.resolve("Subscribing to BLE notifications started.");
-    }
-    @ReactMethod
-    public void subscribeToBLENotificationsMine(String serviceUUID, String characteristicUUID, Promise promise) {
-        if (bluetoothGatt == null) {
-            promise.reject("BLE Not Connected", "No active BLE connection.");
-            return;
+        if (!writeDescriptorStarted) {
+            subscribePromise = null;
+            promise.reject("Descriptor Write Failed", "Failed to start descriptor write.");
         }
-
-        BluetoothGattService service = bluetoothGatt.getService(UUID.fromString(serviceUUID));
-        if (service == null) {
-            promise.reject("Service Not Found", "BLE service not found.");
-            return;
-        }
-
-        BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString(characteristicUUID));
-        bluetoothGatt.setCharacteristicNotification(characteristic, true);
-        // Perform descriptor write after a short delay
-        BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-        // ✅ REQUIRED: Enable descriptor for notifications!
-        Handler handler = new Handler(Looper.getMainLooper());
-        handler.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                Log.d(TAG, "Looking for CCCD descriptor: " + descriptor);
-
-                if (descriptor != null) {
-                    Log.d(TAG, "Writing Descriptor.......");
-                    //descriptor.setValue(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE | BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                    //descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-                    //BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE // = {0x01, 0x00}
-                    //BluetoothGattDescriptor.ENABLE_INDICATION_VALUE   // = {0x02, 0x00}
-                    descriptor.setValue(new byte[] {0x03, 0x00});
-
-                    bluetoothGatt.writeDescriptor(descriptor);
-
-                }
-            }
-        }, 500); // 500ms delay before attempting to write descriptor
-
-//        BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
-//        if (descriptor != null) {
-//            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-//            bluetoothGatt.writeDescriptor(descriptor);
-//        }
-        Log.d(TAG, "Subscribing to BLE notifications.......");
-        promise.resolve("Subscribing to BLE notifications......");
     }
 
     @ReactMethod
@@ -410,6 +383,5 @@ public class BLEModule extends ReactContextBaseJavaModule {
         }
         promise.reject("BLE Error", "Could not unsubscribe from notifications");
     }
-
 
 }
