@@ -147,7 +147,7 @@ public class BLEModule extends ReactContextBaseJavaModule {
         }
         @Override
         public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            WritableMap params = Arguments.createMap();
+
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d(TAG, "Services discovered!");
 
@@ -164,6 +164,7 @@ public class BLEModule extends ReactContextBaseJavaModule {
                     BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString(CHARACTERISTIC_UUID));
                     if (characteristic != null) {
                         Log.d(TAG, "Characteristic found! Ready for BLE operations.");
+                        WritableMap params = Arguments.createMap();
                         params.putString("status", "Characteristic found! Ready for BLE operations.");
                         params.putString("origin", "native");
                         sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status

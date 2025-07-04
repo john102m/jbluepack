@@ -3,6 +3,8 @@ package com.jbluepack;
 import android.media.MediaPlayer;
 import android.content.Context;
 import android.net.Uri;
+import android.widget.Toast;
+
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
@@ -47,5 +49,13 @@ public class AudioModule extends ReactContextBaseJavaModule {
             promise.reject("ERROR", e);
         }
     }
+    @ReactMethod
+    public void showToast(String message, int duration) {
+        Context context = getReactApplicationContext();
+        int toastDuration = (duration == 0) ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG;
+
+        Toast.makeText(context, message, toastDuration).show();
+    }
+
 
 }
