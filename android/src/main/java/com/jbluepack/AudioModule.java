@@ -50,6 +50,15 @@ public class AudioModule extends ReactContextBaseJavaModule {
         }
     }
     @ReactMethod
+    public void stopAudio() {
+        if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+            mediaPlayer.stop();
+            mediaPlayer.release();
+            mediaPlayer = null;
+        }
+    }
+
+    @ReactMethod
     public void showToast(String message, int duration) {
         Context context = getReactApplicationContext();
         int toastDuration = (duration == 0) ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG;
