@@ -130,6 +130,7 @@ public class BLEModule extends ReactContextBaseJavaModule {
             params.putString("message", status == BluetoothGatt.GATT_SUCCESS ? "Subscribed to BLE notifications!" : "Failed to subscribe");
             params.putString("origin", "native");
             sendEvent("BluetoothNotification", params);
+            Log.e(TAG, "Something happened");
         }
         @Override
         public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
@@ -168,6 +169,9 @@ public class BLEModule extends ReactContextBaseJavaModule {
                         params.putString("status", "Characteristic found! Ready for BLE operations.");
                         params.putString("origin", "native");
                         sendEvent("BluetoothNotification", params);  // ✅ Use separate event type for connection status
+                        String data = "Hello ESP32!";  //a handshake message to esp32 to get charging status on connect
+                        characteristic.setValue(data.getBytes());
+                        bluetoothGatt.writeCharacteristic(characteristic);
                     }
                 }
             } else {
