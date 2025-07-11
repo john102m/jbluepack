@@ -9,6 +9,8 @@ import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
+import com.facebook.react.bridge.WritableArray;
+
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.le.BluetoothLeScanner;
@@ -23,15 +25,22 @@ import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.ScanRecord;
+import android.bluetooth.le.ScanSettings;
 import android.os.ParcelUuid;
 import java.util.Map;
+import android.os.Build;
+import android.content.pm.PackageManager;
+import androidx.core.app.ActivityCompat;
+import android.app.Activity;
 
 import android.os.Handler;
 import android.os.Looper;
 import java.util.List;
-
+import java.util.ArrayList;
 import java.util.UUID;
 import android.util.Log;
+import android.content.Context;
+import android.content.Intent;
 
 public class BLEModule extends ReactContextBaseJavaModule {
     private BluetoothAdapter bluetoothAdapter;
@@ -49,6 +58,9 @@ public class BLEModule extends ReactContextBaseJavaModule {
     private static final String ESP32_DEVICE_ADDRESS = "94:A9:90:48:02:FA";//78:1C:3C:A5:B1:36"; // ESP32 BLE MAC address
     private static final String SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
     private static final String CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+    private static final String CLIENT_CHARACTERISTIC_CONFIG_DESCRIPTOR = "00002902-0000-1000-8000-00805f9b34fb";
+
+    private static final int REQUEST_ENABLE_BT = 1;
 
     public BLEModule(ReactApplicationContext reactContext) {
         super(reactContext);
@@ -64,51 +76,167 @@ public class BLEModule extends ReactContextBaseJavaModule {
         return "BLEModule"; // Used in React Native
     }
 
+    private final List<String> foundDevices = new ArrayList<>();
+
+//    private final ScanCallback bleScanCallback_spare = new ScanCallback() {
+//        @Override
+//        public void onScanResult(int callbackType, ScanResult result) {
+//            BluetoothDevice device = result.getDevice();
+//            String name = device.getName() != null ? device.getName() : "Unnamed";
+//            String deviceInfo = name + " - " + device.getAddress();
+//
+//            if (!foundDevices.contains(deviceInfo)) {
+//                Log.d(TAG, "BLE Device Found: " + deviceInfo);
+//                foundDevices.add(deviceInfo);
+//            }
+//        }
+//
+//        @Override
+//        public void onBatchScanResults(List<ScanResult> results) {
+//            for (ScanResult result : results) {
+//                onScanResult(ScanSettings.CALLBACK_TYPE_ALL_MATCHES, result);
+//            }
+//        }
+//
+//        @Override
+//        public void onScanFailed(int errorCode) {
+//            Log.e(TAG, "BLE scan failed with code: " + errorCode);
+//            if (scanPromise != null) {
+//                scanPromise.reject("BLE Scan Failed", "Error code: " + errorCode);
+//                scanPromise = null;
+//            }
+//        }
+//    };
     private final ScanCallback bleScanCallback = new ScanCallback() {
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
             BluetoothDevice device = result.getDevice();
-            String deviceInfo = device.getName() + " - " + device.getAddress();
-            Log.d(TAG, "BLE Device Found: " + deviceInfo);
+            String name = device.getName();
+            String address = device.getAddress();
 
-            ScanRecord record = result.getScanRecord();
-            byte[] data = record.getManufacturerSpecificData(0x02E5);// Espressif's company ID
-            if (data != null) {
-                // Convert raw bytes to sensor data, if that's what you’re sending
-                Log.d(TAG, "Sensor Data: " + new String(data));
-            }
-            Map<ParcelUuid, byte[]> serviceData = record.getServiceData();
+            if (address == null) return;
 
-            if (scanPromise != null) {
-                scanPromise.resolve(deviceInfo);
-                scanPromise = null;
-            }
+            WritableMap params = Arguments.createMap();
+            params.putString("name", name != null ? name : "Unnamed");
+            params.putString("address", address);
 
-            if (bleScanner != null) {
-                bleScanner.stopScan(this);
-            }
+            Log.d(TAG, "Device found: " + name + " - " + address);
+            sendEvent("BLEDeviceFound", params); // 👈 JS will receive this
         }
 
         @Override
         public void onScanFailed(int errorCode) {
-            Log.e(TAG, "BLE scan failed with code: " + errorCode);
-            if (scanPromise != null) {
-                scanPromise.reject("BLE Scan Failed", "Error code: " + errorCode);
-                scanPromise = null;
-            }
+            Log.e(TAG, "BLE scan failed: " + errorCode);
+            WritableMap params = Arguments.createMap();
+            params.putInt("errorCode", errorCode);
+            sendEvent("BLEScanFailed", params);
         }
     };
 
+//     private final ScanCallback bleScanCallback__old = new ScanCallback() {
+//         @Override
+//         public void onScanResult(int callbackType, ScanResult result) {
+//             BluetoothDevice device = result.getDevice();
+//             String deviceInfo = (device.getName() != null ? device.getName() : "Unnamed") + " - " + device.getAddress();
+//             if (!foundDevices.contains(deviceInfo)) {
+//                 foundDevices.add(deviceInfo);
+//                 Log.d(TAG, "Device found: " + deviceInfo);
+//             }
+//         }
+//
+//         @Override
+//         public void onScanFailed(int errorCode) {
+//             Log.e(TAG, "Scan failed with code: " + errorCode);
+//             if (scanPromise != null) {
+//                 scanPromise.reject("BLE Scan Failed", "Error code: " + errorCode);
+//                 scanPromise = null;
+//             }
+//         }
+//     };
     @ReactMethod
     public void scanBLEDevices(Promise promise) {
-        if (bleScanner == null) {
-            promise.reject("BLE Scan Error", "Bluetooth LE scanner unavailable.");
+        BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        if (bluetoothAdapter == null) {
+            promise.reject("BLE Scan Error", "Device doesn't support Bluetooth.");
             return;
         }
+
+        if (!bluetoothAdapter.isEnabled()) {
+            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            Activity currentActivity = getCurrentActivity();
+            if (currentActivity != null) {
+                currentActivity.startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
+            }
+            promise.reject("BLE Scan Error", "Bluetooth is disabled. Prompting user...");
+            return;
+        }
+
+        if (bleScanner == null) {
+            promise.reject("BLE Scan Error", "Scanner unavailable.");
+            return;
+        }
+
         Log.d(TAG, "Starting BLE scan...");
-        this.scanPromise = promise;
         bleScanner.startScan(bleScanCallback);
+        promise.resolve("Scan started");
     }
+
+//    @ReactMethod
+//    public void scanBLEDevices_worked_fine_amoment agoe(Promise promise) {
+//        if (bleScanner == null) {
+//            promise.reject("BLE Scan Error", "Scanner unavailable.");
+//            return;
+//        }
+//
+//        Log.d(TAG, "Starting BLE scan...");
+//        bleScanner.startScan(bleScanCallback);
+//        promise.resolve("Scan started");  // You can still resolve immediately
+//    }
+//     @ReactMethod
+//     public void scanBLEDevices(Promise promise) {
+//         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+//                 ActivityCompat.checkSelfPermission(getReactApplicationContext(), android.Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+//             promise.reject("Permission Error", "Missing BLUETOOTH_SCAN permission.");
+//             return;
+//         }
+//         if (bleScanner == null) {
+//             promise.reject("BLE Scan Error", "Bluetooth LE scanner unavailable.");
+//             return;
+//         }
+//
+//         Log.d(TAG, "Starting BLE scan...");
+//         this.scanPromise = promise;
+//         foundDevices.clear();
+//         //bleScanner.startScan(bleScanCallback);
+//         bleScanner.startScan(null, new ScanSettings.Builder()
+//                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+//                 .build(), bleScanCallback);
+//
+//         // Stop scan after 5 seconds and return results
+//         new Handler(Looper.getMainLooper()).postDelayed(() -> {
+//             bleScanner.stopScan(bleScanCallback);
+//             Log.d(TAG, "Scan stopped. Found " + foundDevices.size() + " devices.");
+//
+//             if (scanPromise != null) {
+//                 WritableArray resultArray = Arguments.createArray();
+//                 for (String device : foundDevices) {
+//                     resultArray.pushString(device);
+//                 }
+//                 scanPromise.resolve(resultArray);
+//                 scanPromise = null;
+//             }
+//         }, 7000);
+//     }
+    @ReactMethod
+    public void stopBLEScan() {
+        if (bleScanner != null) {
+            bleScanner.stopScan(bleScanCallback);
+            Log.d(TAG, "Scan manually stopped.");
+        } else {
+            Log.w(TAG, "No active BLE scanner to stop.");
+        }
+    }
+
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override
@@ -347,7 +475,7 @@ public class BLEModule extends ReactContextBaseJavaModule {
             return;
         }
         // Check for CCCD descriptor
-        BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
+        BluetoothGattDescriptor descriptor = characteristic.getDescriptor(UUID.fromString(CLIENT_CHARACTERISTIC_CONFIG_DESCRIPTOR));
 
         if (descriptor == null) {
             Log.w(TAG, "CCCD descriptor not found. Notifications may not work properly.");
@@ -375,6 +503,7 @@ public class BLEModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void unsubscribeFromBLENotifications(String serviceUUID, String characteristicUUID, Promise promise) {
+        Log.d(TAG, "Started unsubscribe..... ");
         if (bluetoothGatt != null) {
             BluetoothGattService service = bluetoothGatt.getService(UUID.fromString(serviceUUID));
             if (service != null) {
@@ -382,10 +511,12 @@ public class BLEModule extends ReactContextBaseJavaModule {
                 if (characteristic != null) {
                     bluetoothGatt.setCharacteristicNotification(characteristic, false); // ✅ Stop notifications
                     promise.resolve("Unsubscribed from BLE notifications");
+                    Log.d(TAG, "Unsubscribed from BLE notifications");
                     return;
                 }
             }
         }
+        Log.d(TAG, "Could not unsubscribe from notifications");
         promise.reject("BLE Error", "Could not unsubscribe from notifications");
     }
 
